@@ -1,0 +1,243 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description:
+  S3 Buckets
+
+Parameters:
+  TLD:
+    Description: Git repository to retrieve source from
+    Type: String
+    Default: crunchbangplusplus.org
+    
+  CloudFrontHostedZone:
+    Description: Hosted zone ID for cloudfront
+    Type: String
+    Default: Z2FDTNDATAQYW2
+    
+  CbppHostedZone:
+    Description: Hosted zone for domain name
+    Type: String
+    Default: Z2KOY9F63D3MWH
+
+Resources:
+
+  CbppDNSRecord: ## be sure to update registered domain's nameservers
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Sub ${CbppHostedZone}
+      Name: !Sub ${TLD}.
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: !Ref CloudFrontHostedZone
+
+  wwwCbppDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${TLD}.
+      Name: !Sub www.${TLD}.
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: !Ref CloudFrontHostedZone
+
+  packagesCbppDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${TLD}.
+      Name: !Sub packages.${TLD}.
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: !Ref CloudFrontHostedZone
+
+  ## using route53 hosted zone
+  #~ CbppHostedZone:
+    #~ Type: AWS::Route53::HostedZone
+    #~ Properties:
+      #~ HostedZoneConfig:
+        #~ Comment: !Sub 'Hosted zone for ${TLD}'
+      #~ Name: !Sub ${TLD}
+
+  Certificate:
+    #~ DependsOn: 
+      #~ - CbppHostedZone
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub ${TLD}
+      ValidationMethod: DNS
+      DomainValidationOptions:
+      - DomainName: !Sub ${TLD}
+        ValidationDomain: !Sub ${TLD}
+      SubjectAlternativeNames: ## each san requires dns verification
+      - !Sub www.${TLD}
+      - !Sub packages.${TLD}
+
+  Distribution:
+    DependsOn: 
+      - CbppBucket
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      Tags:
+        - Key: domain
+          Value: www
+      DistributionConfig:
+        Aliases:
+          - !Sub ${TLD}
+          - !Sub www.${TLD}
+        DefaultCacheBehavior:
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: !Sub ${TLD}
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Origins:
+          - DomainName: !Sub ${CbppBucket}.s3.amazonaws.com
+            Id: !Sub ${TLD}
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${CbppOriginAccessIdentity}
+        Enabled: true
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1
+
+  CbppOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'CloudFront OAI for ${TLD}'
+
+  PackagesDistribution:
+    DependsOn: 
+      - PackagesCbppBucket
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      Tags:
+        - Key: domain
+          Value: packages
+      DistributionConfig:
+        Aliases:
+          - !Sub packages.${TLD}
+        DefaultCacheBehavior:
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: !Sub ${TLD}
+          ViewerProtocolPolicy: allow-all ## backwards compatiblity with old repos
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Origins:
+          - DomainName: !Sub packages.${CbppBucket}.s3.amazonaws.com
+            Id: !Sub ${TLD}
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${PackagesCbppOriginAccessIdentity}
+        Enabled: true
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1
+
+  PackagesCbppOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'CloudFront OAI for ${TLD}'
+
+  WwwCbppBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub www.${CbppBucket}
+      AccessControl: PublicRead
+      VersioningConfiguration:
+        Status: Suspended
+      WebsiteConfiguration:
+        RedirectAllRequestsTo:
+          HostName: !Ref CbppBucket
+          Protocol: https
+  
+  CbppBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Ref TLD
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      AccessControl: PublicRead
+      VersioningConfiguration:
+        Status: Suspended
+
+  CbppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CbppBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: PublicReadGetObject
+          Effect: Allow
+          Principal: "*"
+          Action: s3:GetObject
+          Resource:
+            - !Sub arn:aws:s3:::${CbppBucket}/*
+  
+  PackagesCbppBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub packages.${TLD}
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      AccessControl: PublicRead
+      VersioningConfiguration:
+        Status: Suspended
+
+  PackagesCbppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PackagesCbppBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: PublicReadGetObject
+          Effect: Allow
+          Principal: "*"
+          Action: s3:GetObject
+          Resource:
+            - !Sub arn:aws:s3:::${PackagesCbppBucket}/*
+
+Outputs:
+
+  CbppBucket:
+    Value: !Ref CbppBucket
+    Description: Cbpp Bucket
+
+  WwwCbppBucket:
+    Value: !Ref WwwCbppBucket
+    Description: WWW Cbpp Bucket
+
+  CbppHostedZone:
+    Value: !Ref CbppHostedZone
+    Description: Hosted Zone ID
+
+  PackagesCbppBucket:
+    Value: !Ref PackagesCbppBucket
+    Description: Packages Cbpp Bucket
+    
+  CbppDistribution:
+    Value: !Ref Distribution
+    Description: Cbpp Distribution
+
+  PackagesCbppDistribution:
+    Value: !Ref PackagesDistribution
+    Description: Packages Cbpp Distribution
+
+  PrimaryCertificate:
+    Value: !Ref Certificate
+    Description: Primary SSL cert
